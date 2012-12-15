@@ -21,7 +21,7 @@ import static org.junit.Assert.assertTrue;
 /**
  * Unit test for simple App.
  */
-public class JRubyTest
+public class MultipleJRubyInstancesTest
 {
     private static class RubyCallable implements Callable<IRubyObject> {
 
