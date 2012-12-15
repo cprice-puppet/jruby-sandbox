@@ -4,11 +4,9 @@ package com.puppetlabs.sandbox;
 import org.jruby.Ruby;
 import org.jruby.RubyRuntimeAdapter;
 import org.jruby.javasupport.JavaEmbedUtils;
-import org.jruby.management.Runtime;
 import org.jruby.runtime.builtin.IRubyObject;
 import org.junit.Test;
 
-import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.util.ArrayList;
@@ -17,10 +15,6 @@ import java.util.concurrent.*;
 import static org.junit.Assert.assertTrue;
 
 
-
-/**
- * Unit test for simple App.
- */
 public class MultipleJRubyInstancesTest
 {
     private static class RubyCallable implements Callable<IRubyObject> {
@@ -39,7 +33,9 @@ public class MultipleJRubyInstancesTest
 
 
     @Test
-    public void testApp() throws FileNotFoundException, ExecutionException, InterruptedException {
+    public void testMultipleJRubyInstances()
+            throws FileNotFoundException, ExecutionException, InterruptedException
+    {
         ArrayList<String> loadPath1 = new ArrayList<String>();
         loadPath1.add("./src/test/resources/ruby/environment1/lib");
         Ruby ruby1 = JavaEmbedUtils.initialize(loadPath1);

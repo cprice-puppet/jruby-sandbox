@@ -11,7 +11,7 @@
     <dependencies>
         <dependency>
             <groupId>org.jruby</groupId>
-            <artifactId>jruby</artifactId>
+            <artifactId>jruby-complete</artifactId>
             <version>1.7.1</version>
         </dependency>
 
@@ -20,6 +20,18 @@
             <artifactId>junit</artifactId>
             <version>4.11</version>
             <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.eclipse.jetty</groupId>
+            <artifactId>jetty-distribution</artifactId>
+            <version>8.1.8.v20121106</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jruby.rack</groupId>
+            <artifactId>jruby-rack</artifactId>
+            <version>1.1.12</version>
         </dependency>
     </dependencies>
 
