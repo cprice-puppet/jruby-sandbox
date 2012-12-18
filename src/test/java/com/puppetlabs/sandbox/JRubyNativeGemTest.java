@@ -3,8 +3,11 @@ package com.puppetlabs.sandbox;
 import org.jruby.Ruby;
 import org.jruby.RubyInstanceConfig;
 import org.jruby.RubyRuntimeAdapter;
+import org.jruby.exceptions.RaiseException;
 import org.jruby.javasupport.JavaEmbedUtils;
 import org.junit.Test;
+
+import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
 
@@ -28,6 +31,12 @@ public class JRubyNativeGemTest {
 
         Ruby ruby = JavaEmbedUtils.initialize(new ArrayList(), ruby_config);
         RubyRuntimeAdapter adapter = JavaEmbedUtils.newRuntimeAdapter();
-        adapter.eval(ruby, ruby_code);
+
+        try {
+            adapter.eval(ruby, ruby_code);
+        } catch (RaiseException e) {
+            assertTrue("Expected an ExtensionBuildError", e.getMessage().contains("ExtensionBuildError"));
+        }
+
     }
 }
