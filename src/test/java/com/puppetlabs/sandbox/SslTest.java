@@ -1,18 +1,25 @@
 package com.puppetlabs.sandbox;
 
+import org.apache.commons.io.FileUtils;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
+import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSet;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x500.X500NameBuilder;
+import org.bouncycastle.asn1.x500.style.BCStyle;
+import org.bouncycastle.asn1.x509.*;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.openssl.PEMReader;
-import org.eclipse.jetty.security.Authenticator;
-import org.eclipse.jetty.security.ConstraintSecurityHandler;
-import org.eclipse.jetty.security.SecurityHandler;
-import org.eclipse.jetty.security.ServerAuthException;
-import org.eclipse.jetty.security.authentication.ClientCertAuthenticator;
-import org.eclipse.jetty.server.Authentication;
+import org.bouncycastle.openssl.PEMWriter;
+import org.bouncycastle.operator.OperatorCreationException;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.bouncycastle.pkcs.PKCS10CertificationRequest;
+import org.bouncycastle.pkcs.PKCS10CertificationRequestBuilder;
+import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.server.handler.AbstractHandler;
-import org.eclipse.jetty.server.handler.ContextHandler;
 import org.eclipse.jetty.server.ssl.SslSelectChannelConnector;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
@@ -20,129 +27,36 @@ import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.junit.Test;
 import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
-import javax.net.ssl.*;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.net.Socket;
+import java.io.*;
 import java.security.*;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.util.Random;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class SslTest {
 
-    private class HandRolledKeyManager implements X509KeyManager {
-        @Override
-        public String[] getClientAliases(String s, Principal[] principals) {
-            System.out.println("!!!!!!!!!!!!!CALLED!!!!!!!!!!");
-            throw new NotImplementedException();
-        }
-
-        @Override
-        public String chooseClientAlias(String[] strings, Principal[] principals, Socket socket) {
-            System.out.println("!!!!!!!!!!!!!CALLED!!!!!!!!!!");
-            throw new NotImplementedException();
-        }
-
-        @Override
-        public String[] getServerAliases(String s, Principal[] principals) {
-            System.out.println("!!!!!!!!!!!!!CALLED!!!!!!!!!!");
-            throw new NotImplementedException();
-        }
-
-        @Override
-        public String chooseServerAlias(String s, Principal[] principals, Socket socket) {
-            System.out.println("!!!!!!!!!!!!!CALLED!!!!!!!!!!");
-            throw new NotImplementedException();
-        }
-
-        @Override
-        public X509Certificate[] getCertificateChain(String s) {
-            System.out.println("!!!!!!!!!!!!!CALLED!!!!!!!!!!");
-            throw new NotImplementedException();
-        }
-
-        @Override
-        public PrivateKey getPrivateKey(String s) {
-            System.out.println("!!!!!!!!!!!!!CALLED!!!!!!!!!!");
-            throw new NotImplementedException();
-        }
-    }
-
-    private class HandRolledTrustManager implements X509TrustManager {
-        @Override
-        public void checkClientTrusted(X509Certificate[] x509Certificates, String s) throws CertificateException {
-            System.out.println("!!!!!!!!!!!!!checkClientTrustedCALLED!!!!!!!!!!");
-//            throw new CertificateException("doh");
-//            throw new NotImplementedException();
-        }
-
-        @Override
-        public void checkServerTrusted(X509Certificate[] x509Certificates, String s) throws CertificateException {
-            System.out.println("!!!!!!!!!!!!!checkServerTrustedCALLED!!!!!!!!!!");
-//            throw new NotImplementedException();
-        }
-
-        @Override
-        public X509Certificate[] getAcceptedIssuers() {
-            System.out.println("!!!!!!!!!!!!!getAcceptedIssuersCALLED!!!!!!!!!!");
-//            throw new NotImplementedException();
-            return new X509Certificate[0];
-        }
-    }
-
-    private class HandRolledAuthenticator implements Authenticator {
-        @Override
-        public void setConfiguration(AuthConfiguration authConfiguration) {
-//            throw new NotImplementedException();
-            System.out.println("HRA.setConfig!");
-        }
-
-        @Override
-        public String getAuthMethod() {
-            throw new NotImplementedException();
-        }
-
-        @Override
-        public Authentication validateRequest(ServletRequest servletRequest, ServletResponse servletResponse, boolean b) throws ServerAuthException {
-            return Authentication.SEND_SUCCESS;
-        }
-
-        @Override
-        public boolean secureResponse(ServletRequest servletRequest, ServletResponse servletResponse, boolean b, Authentication.User user) throws ServerAuthException {
-            throw new NotImplementedException();
-        }
-    }
-
-    public class HelloHandler extends AbstractHandler
-    {
-        public void handle(String target,Request baseRequest,HttpServletRequest request,HttpServletResponse response)
-                throws IOException, ServletException
-        {
-            response.setContentType("text/html;charset=utf-8");
-            response.setStatus(HttpServletResponse.SC_OK);
-            baseRequest.setHandled(true);
-            response.getWriter().println("<h1>Hello World</h1>");
-        }
-    }
+    private static final String PATH_CA_PASSWORD = "./target/test/master/conf/ssl/ca/private/ca.pass";
+    private static final String PATH_CA_CERT = "./target/test/master/conf/ssl/ca/ca_crt.pem";
+    // TODO: don't hard-code localhost
+    private static final String PATH_MASTER_CERT = "./target/master/conf/ssl/certs/localhost.pem";
+    private static final String PATH_MASTER_PRIVATE_KEY = "./target/test/master/conf/ssl/private_keys/localhost.pem";
+    private static final String PATH_MASTER_PUBLIC_KEY = "./target/test/master/conf/ssl/public_keys/localhost.pem";
 
     public class HelloServlet extends HttpServlet
     {
         private String greeting="Hello World";
         public HelloServlet(){}
-        public HelloServlet(String greeting)
-        {
-            this.greeting=greeting;
-        }
+
         protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
         {
             if (request.getAttribute("javax.servlet.request.X509Certificate") != null) {
@@ -160,38 +74,19 @@ public class SslTest {
 
     @Test
     public void testHttpsServer() throws Exception {
-        assertTrue(true);
-        if (true) { return; }
         Security.addProvider(new BouncyCastleProvider());
-        PEMReader reader;
 
-        reader = new PEMReader(new InputStreamReader(
-                new FileInputStream("./target/test/master/conf/ssl/ca/ca_crt.pem")));
-        X509Certificate ca_cert = (X509Certificate)reader.readObject();
+        if (! masterCertsExist()) {
+            createMasterCerts();
+        }
 
-        reader = new PEMReader(new InputStreamReader(
-                new FileInputStream("./target/master/conf/ssl/certs/localhost.pem")));
-        X509Certificate cert = (X509Certificate)reader.readObject();
-
-        reader = new PEMReader(new InputStreamReader(
-                new FileInputStream("./target/test/master/conf/ssl/private_keys/localhost.pem")));
-        KeyPair keyPair = (KeyPair)reader.readObject();
-
-        KeyStore keystore = KeyStore.getInstance("JKS");
-        keystore.load(null);
-        keystore.setCertificateEntry("ca-cert-alias", ca_cert);
-        keystore.setCertificateEntry("cert-alias", cert);
-        keystore.setKeyEntry("key-alias", keyPair.getPrivate(),
-                "password".toCharArray(), new Certificate[] {cert});
-
-
-
+        KeyStore keystore = createMasterKeyStore();
 
 
         Server server = new Server();
 
 //        KeyManager keyManager = new HandRolledKeyManager();
-        TrustManager trustManager = new HandRolledTrustManager();
+//        TrustManager trustManager = new HandRolledTrustManager();
 
 
         KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
@@ -250,6 +145,141 @@ public class SslTest {
 //        SSLContext defContext = sslContextFactory.getSslContext();
 
         server.join();
+    }
+
+
+    private boolean masterCertsExist() {
+        return (new File(PATH_CA_CERT).exists() &&
+                new File(PATH_MASTER_CERT).exists() &&
+                new File(PATH_MASTER_PRIVATE_KEY).exists());
+    }
+
+
+    private void createMasterCerts() throws IOException, NoSuchAlgorithmException, NoSuchProviderException, OperatorCreationException {
+        FileUtils.forceMkdir(new File(PATH_CA_PASSWORD).getParentFile());
+        FileUtils.forceMkdir(new File(PATH_MASTER_PRIVATE_KEY).getParentFile());
+        FileUtils.forceMkdir(new File(PATH_MASTER_PUBLIC_KEY).getParentFile());
+
+        saveCAPassword(generateCAPassword());
+        KeyPair keyPair = generateKeyPair();
+        saveKeyPair(keyPair);
+
+        // TODO: don't hard-code localhost
+        PKCS10CertificationRequest certReq = generateCertReq(keyPair, "Puppet CA: localhost");
+        X509Certificate cert = signCertificateRequest(certReq, keyPair.getPrivate());
+        saveCACert(cert);
+
+//        # Create a new cert request.  We do this specially, because we don't want
+//        # to actually save the request anywhere.
+//        request = Puppet::SSL::CertificateRequest.new(host.name)
+//
+//        # We deliberately do not put any subjectAltName in here: the CA
+//        # certificate absolutely does not need them. --daniel 2011-10-13
+//        request.generate(host.key)
+//
+//        # Create a self-signed certificate.
+//        @certificate = sign(host.name, false, request)
+//
+//        # And make sure we initialize our CRL.
+//                crl
+        fail();
+    }
+
+    private String generateCAPassword() {
+        StringBuilder sb = new StringBuilder();
+        Random rand = new Random();
+        for (int i = 0; i < 20; i++) {
+            sb.append((char)(rand.nextInt(74) + 48));
+        }
+        return sb.toString();
+    }
+
+    private void saveCAPassword(String caPass) throws IOException {
+        FileUtils.writeStringToFile(new File(PATH_CA_PASSWORD), caPass, "UTF-8");
+    }
+
+    private KeyPair generateKeyPair()
+            throws NoSuchAlgorithmException, NoSuchProviderException
+    {
+        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA", "BC");
+        keyGen.initialize(4096);
+        KeyPair keyPair = keyGen.generateKeyPair();
+
+        return keyPair;
+    }
+
+    private void saveKeyPair(KeyPair keyPair) throws IOException {
+        PEMWriter pemWriter = new PEMWriter(new FileWriter(PATH_MASTER_PRIVATE_KEY));
+        pemWriter.writeObject(keyPair.getPrivate());
+        pemWriter.flush();
+
+        pemWriter = new PEMWriter(new FileWriter(PATH_MASTER_PUBLIC_KEY));
+        pemWriter.writeObject(keyPair.getPublic());
+        pemWriter.flush();
+    }
+
+
+    private PKCS10CertificationRequest generateCertReq(KeyPair keyPair, String commonName) throws OperatorCreationException, IOException {
+        X500NameBuilder x500NameBuilder = new X500NameBuilder(BCStyle.INSTANCE);
+        x500NameBuilder.addRDN(BCStyle.CN, commonName);
+
+        X500Name x500Name = x500NameBuilder.build();
+
+        // TODO: the puppet code sets a property "version=0" on the request object
+        //  here; can't figure out how to do that at the moment.
+        PKCS10CertificationRequestBuilder requestBuilder =
+                new JcaPKCS10CertificationRequestBuilder(x500Name, keyPair.getPublic());
+
+        // TODO: support DNS ALT names; probably looks something like this:
+//        Extensions extensions = new Extensions(new Extension[] {
+//                new Extension(X509Extension.subjectAlternativeName, false,
+//                        new DEROctetString(
+//                                new GeneralNames(new GeneralName[] {
+//                                        new GeneralName(GeneralName.dNSName, "foo.bar.com"),
+//                                        new GeneralName(GeneralName.dNSName, "bar.baz.com"),
+//                                        })))
+//        });
+//
+//        requestBuilder.addAttribute(PKCSObjectIdentifiers.pkcs_9_at_extensionRequest,
+//                new DERSet(extensions));
+
+        PKCS10CertificationRequest request = requestBuilder.build(
+                new JcaContentSignerBuilder("SHA1withRSA").setProvider("BC").build(keyPair.getPrivate()));
+
+        return request;
+    }
+
+    private X509Certificate signCertificateRequest(PKCS10CertificationRequest certReq, PrivateKey privateKey) {
+        throw new NotImplementedException();
+    }
+
+    private void saveCACert(X509Certificate cert) {
+        throw new NotImplementedException();
+    }
+
+
+    private KeyStore createMasterKeyStore() throws IOException, KeyStoreException, NoSuchAlgorithmException, CertificateException {
+        PEMReader reader;
+
+        reader = new PEMReader(new InputStreamReader(
+                new FileInputStream(PATH_CA_CERT)));
+        X509Certificate ca_cert = (X509Certificate)reader.readObject();
+
+        reader = new PEMReader(new InputStreamReader(
+                new FileInputStream(PATH_MASTER_CERT)));
+        X509Certificate cert = (X509Certificate)reader.readObject();
+
+        reader = new PEMReader(new InputStreamReader(
+                new FileInputStream(PATH_MASTER_PRIVATE_KEY)));
+        KeyPair keyPair = (KeyPair)reader.readObject();
+
+        KeyStore keystore = KeyStore.getInstance("JKS");
+        keystore.load(null);
+        keystore.setCertificateEntry("ca-cert-alias", ca_cert);
+        keystore.setCertificateEntry("cert-alias", cert);
+        keystore.setKeyEntry("key-alias", keyPair.getPrivate(),
+                "password".toCharArray(), new Certificate[] {cert});
+        return keystore;
     }
 
 
