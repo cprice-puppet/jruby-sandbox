@@ -1,6 +1,7 @@
 package com.puppetlabs.sandbox;
 
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.IOUtils;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x500.X500NameBuilder;
 import org.bouncycastle.asn1.x500.style.BCStyle;
@@ -53,23 +54,122 @@ public class SslTest {
     private static final String PATH_MASTER_PRIVATE_KEY = PATH_TEST_DIR + "/private_keys/localhost.pem";
     private static final String PATH_MASTER_CERT = PATH_TEST_DIR + "/certs/localhost.pem";
 
+    private static final String PATH_HOSTS_CERTS_DIR = PATH_TEST_DIR + "/certs";
+
     private static final AtomicInteger nextSerialNum = new AtomicInteger(1);
 
-    public class HelloServlet extends HttpServlet
+    private static abstract class AuthServlet extends HttpServlet
     {
-        private String greeting="Hello World";
-        public HelloServlet(){}
+        public AuthServlet(){}
 
-        protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
+        protected abstract void get(HttpServletRequest request, HttpServletResponse response) throws IOException;
+
+        protected void put(HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
+            super.doPut(request, response);
+        }
+
+        protected void checkAuth(HttpServletRequest request)
         {
             if (request.getAttribute("javax.servlet.request.X509Certificate") != null) {
                 X509Certificate cert = ((X509Certificate[])(request.getAttribute("javax.servlet.request.X509Certificate")))[0];
-                System.out.println("Got authenticated request for '" + cert.getSubjectDN() + "'");
+                System.out.println("Got authenticated " + request.getMethod() + " request for '" + cert.getSubjectDN() + "' at URL '" + request.getRequestURI() + "'");
+            } else {
+                System.out.println("Got unauthenticated " + request.getMethod() + " request at URL '" + request.getRequestURI() + "'");
             }
-            response.setContentType("text/html");
+        }
+
+        @Override
+        protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+            checkAuth(request);
+            get(request, response);
+        }
+
+        @Override
+        protected void doPut(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+            checkAuth(request);
+            put(request, response);
+        }
+    }
+
+    private static class FailServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            response.setContentType("text/plain");
+            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            response.getWriter().println("Unsupported URL path: '" + request.getPathInfo() + "'");
+        }
+    }
+
+    private static class CACertServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            response.setContentType("text/plain");
             response.setStatus(HttpServletResponse.SC_OK);
-            response.getWriter().println("<h1>"+greeting+"</h1>");
-            response.getWriter().println("session=" + request.getSession(true).getId());
+            IOUtils.copy(new FileReader(PATH_CA_CERT), response.getWriter());
+        }
+    }
+
+    private static class CertServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            String host = request.getPathInfo().replaceFirst("/", "");
+            File hostCertFile = new File(PATH_HOSTS_CERTS_DIR + "/" + host + ".pem");
+
+            System.out.println("Looking for cert file: " + hostCertFile.getAbsolutePath());
+
+            response.setContentType("text/plain");
+
+            if (hostCertFile.exists()) {
+                response.setStatus((HttpServletResponse.SC_OK));
+                IOUtils.copy(new FileReader(hostCertFile), response.getWriter());
+            } else {
+                response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+                response.getWriter().print("Could not find certificate " + request.getPathInfo());
+            }
+        }
+    }
+
+    private static class CertReqServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+
+            response.setContentType("text/plain");
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            response.getWriter().print("Could not find certificate_request " + request.getPathInfo());
+        }
+
+        @Override
+        protected void put(HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
+            String host = request.getPathInfo().replaceFirst("/", "");
+            String certReqString = IOUtils.toString(request.getInputStream());
+//            System.out.println("CERT REQ PUT (for host '" + host + "':");
+//            System.out.println(certReqString);
+            PEMReader reader = new PEMReader(new StringReader(certReqString));
+            PKCS10CertificationRequest certReq =
+                    new PKCS10CertificationRequest(((org.bouncycastle.jce.PKCS10CertificationRequest) reader.readObject()).getEncoded());
+            // TODO: we are just autosigning here, never saving the CSR to disk.
+
+            X509Certificate cert;
+            try {
+                cert = signCertificateRequest(certReq, caName(), caPrivateKey());
+            } catch (OperatorCreationException e) {
+                throw new ServletException(e);
+            } catch (CertificateException e) {
+                throw new ServletException(e);
+            }
+
+            saveToPEM(cert, PATH_HOSTS_CERTS_DIR + "/" + host + ".pem");
+
+            response.setContentType("text/yaml");
+            response.setStatus(HttpServletResponse.SC_OK);
+            response.getWriter().print("--- \n  - !ruby/object:Puppet::SSL::CertificateRequest\n    name: " +
+                    host + "\n    content: !ruby/object:OpenSSL::X509::Request {}\n    expiration: " +
+                    // TODO: pull the *real* expiration date off of the cert req
+                    DateTime.now().plus(Period.years(5)).toString());
         }
     }
 
@@ -108,9 +208,11 @@ public class SslTest {
 
         ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
         context.setContextPath("/");
-        context.addServlet(new ServletHolder(new HelloServlet()),"/*");
-//        context.addServlet(new ServletHolder(new HelloServlet("Buongiorno Mondo")),"/it/*");
-//        context.addServlet(new ServletHolder(new HelloServlet("Bonjour le Monde")),"/fr/*");
+        context.addServlet(new ServletHolder(new FailServlet()), "/*");
+        context.addServlet(new ServletHolder(new CACertServlet()), "/production/certificate/ca");
+        context.addServlet(new ServletHolder(new CertServlet()), "/production/certificate/*");
+        context.addServlet(new ServletHolder(new CertReqServlet()), "/production/certificate_request/*");
+
 
         server.setHandler(context);
 
@@ -145,10 +247,9 @@ public class SslTest {
         // TODO: don't hard-code localhost
         String host = "localhost";
 
-        X500Name caName = generateX500Name("Puppet CA: " + host);
 
-        PKCS10CertificationRequest caCertReq = generateCertReq(caKeyPair, caName);
-        X509Certificate caCert = signCertificateRequest(caCertReq, caName, caKeyPair.getPrivate());
+        PKCS10CertificationRequest caCertReq = generateCertReq(caKeyPair, caName());
+        X509Certificate caCert = signCertificateRequest(caCertReq, caName(), caKeyPair.getPrivate());
         saveToPEM(caCert, PATH_CA_CERT);
 
         KeyPair hostKeyPair = generateKeyPair();
@@ -158,7 +259,7 @@ public class SslTest {
         X500Name hostName = generateX500Name(host);
 
         PKCS10CertificationRequest hostCertReq = generateCertReq(hostKeyPair, hostName);
-        X509Certificate hostCert = signCertificateRequest(hostCertReq, caName, caKeyPair.getPrivate());
+        X509Certificate hostCert = signCertificateRequest(hostCertReq, caName(), caKeyPair.getPrivate());
         saveToPEM(hostCert, PATH_MASTER_CERT);
 
         // TODO: crl
@@ -166,9 +267,21 @@ public class SslTest {
 //                crl
     }
 
+    private static X500Name caName() {
+        // TODO: don't hard-code localhost
+        return generateX500Name("Puppet CA: localhost");
+    }
+
+    private static PrivateKey caPrivateKey() throws IOException {
+        PEMReader reader = new PEMReader(new FileReader(PATH_CA_PRIVATE_KEY));
+        PrivateKey privateKey = ((KeyPair) reader.readObject()).getPrivate();
+        return privateKey;
+    }
+
+
     // TODO: It really sucks that the most specific type we can use
     //  here is 'Object'.
-    private void saveToPEM(Object pemObject, String filePath) throws IOException {
+    private static void saveToPEM(Object pemObject, String filePath) throws IOException {
         PEMWriter pemWriter = new PEMWriter(new FileWriter(filePath));
         pemWriter.writeObject(pemObject);
         pemWriter.flush();
@@ -198,7 +311,7 @@ public class SslTest {
         return keyPair;
     }
 
-    private X500Name generateX500Name(String commonName) {
+    private static X500Name generateX500Name(String commonName) {
         X500NameBuilder x500NameBuilder = new X500NameBuilder(BCStyle.INSTANCE);
         x500NameBuilder.addRDN(BCStyle.CN, commonName);
 
@@ -231,7 +344,7 @@ public class SslTest {
     }
 
 
-    private X509Certificate signCertificateRequest(PKCS10CertificationRequest certReq,
+    private static X509Certificate signCertificateRequest(PKCS10CertificationRequest certReq,
                                                    X500Name issuer,
                                                    PrivateKey issuerPrivateKey)
             throws OperatorCreationException, CertificateException {
@@ -268,7 +381,7 @@ public class SslTest {
         return converter.getCertificate(holder);
     }
 
-    private BigInteger nextSerial() {
+    private static BigInteger nextSerial() {
         // TODO: this needs to be able to persist between runs.
         int val = nextSerialNum.getAndIncrement();
         return BigInteger.valueOf(val);
