@@ -1,15 +1,9 @@
 package com.puppetlabs.sandbox;
 
 import org.apache.commons.io.FileUtils;
-import org.bouncycastle.asn1.ASN1ObjectIdentifier;
-import org.bouncycastle.asn1.ASN1OctetString;
-import org.bouncycastle.asn1.DEROctetString;
-import org.bouncycastle.asn1.DERSet;
-import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x500.X500NameBuilder;
 import org.bouncycastle.asn1.x500.style.BCStyle;
-import org.bouncycastle.asn1.x509.*;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -29,10 +23,8 @@ import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.joda.time.DateTime;
-import org.joda.time.Days;
 import org.joda.time.Period;
 import org.junit.Test;
-import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -47,10 +39,7 @@ import java.security.*;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
-import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.Assert.fail;
 
 public class SslTest {
 
@@ -76,7 +65,6 @@ public class SslTest {
             if (request.getAttribute("javax.servlet.request.X509Certificate") != null) {
                 X509Certificate cert = ((X509Certificate[])(request.getAttribute("javax.servlet.request.X509Certificate")))[0];
                 System.out.println("Got authenticated request for '" + cert.getSubjectDN() + "'");
-//                request.getAu
             }
             response.setContentType("text/html");
             response.setStatus(HttpServletResponse.SC_OK);
@@ -96,12 +84,7 @@ public class SslTest {
 
         KeyStore keystore = createMasterKeyStore();
 
-
         Server server = new Server();
-
-//        KeyManager keyManager = new HandRolledKeyManager();
-//        TrustManager trustManager = new HandRolledTrustManager();
-
 
         KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
         kmf.init(keystore, "password".toCharArray());
@@ -110,33 +93,18 @@ public class SslTest {
         tmf.init(keystore);
 
         SSLContext sslContext = SSLContext.getInstance("SSL");
-//        context.init(new KeyManager[] { keyManager },
         sslContext.init(kmf.getKeyManagers(),
-//                new TrustManager[] { trustManager },
                 tmf.getTrustManagers(),
                 null);
-//        context.get
-//        context.getServerSocketFactory()
-//        SslContextFactory sslContextFactory = new SslContextFactory(true);
         SslContextFactory sslContextFactory = new SslContextFactory();
-//        sslContextFactory.setNeedClientAuth(true);
         sslContextFactory.setWantClientAuth(true);
         sslContextFactory.setSslContext(sslContext);
-//        SSLContext defContext = sslContextFactory.getSslContext();
-
-
 
         sslContextFactory.setKeyStore(keystore);
 
         Connector connector = new SslSelectChannelConnector(sslContextFactory);
-//        Connector connector = new SslSelectChannelConnector();
         connector.setPort(8140);
         server.addConnector(connector);
-
-
-//        HelloHandler handler = new HelloHandler();
-//        server.setHandler(handler);
-
 
         ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
         context.setContextPath("/");
@@ -144,20 +112,9 @@ public class SslTest {
 //        context.addServlet(new ServletHolder(new HelloServlet("Buongiorno Mondo")),"/it/*");
 //        context.addServlet(new ServletHolder(new HelloServlet("Bonjour le Monde")),"/fr/*");
 
-//        SecurityHandler secHandler = new ConstraintSecurityHandler();
-////        Authenticator auth = new ClientCertAuthenticator();
-//        Authenticator auth = new HandRolledAuthenticator();
-//        secHandler.setAuthenticator(auth);
-//        context.setSecurityHandler(secHandler);
-
         server.setHandler(context);
 
-
-
         server.start();
-
-//        SSLContext defContext = sslContextFactory.getSslContext();
-
         server.join();
     }
 
@@ -241,24 +198,12 @@ public class SslTest {
         return keyPair;
     }
 
-//    private void saveKeyPair(KeyPair keyPair) throws IOException {
-//        PEMWriter pemWriter = new PEMWriter(new FileWriter(PATH_MASTER_PRIVATE_KEY));
-//        pemWriter.writeObject(keyPair.getPrivate());
-//        pemWriter.flush();
-//
-//        pemWriter = new PEMWriter(new FileWriter(PATH_MASTER_PUBLIC_KEY));
-//        pemWriter.writeObject(keyPair.getPublic());
-//        pemWriter.flush();
-//    }
-
     private X500Name generateX500Name(String commonName) {
         X500NameBuilder x500NameBuilder = new X500NameBuilder(BCStyle.INSTANCE);
         x500NameBuilder.addRDN(BCStyle.CN, commonName);
 
         return x500NameBuilder.build();
     }
-
-
 
     private PKCS10CertificationRequest generateCertReq(KeyPair keyPair, X500Name subjectName) throws OperatorCreationException, IOException {
         // TODO: the puppet code sets a property "version=0" on the request object
@@ -328,13 +273,6 @@ public class SslTest {
         int val = nextSerialNum.getAndIncrement();
         return BigInteger.valueOf(val);
     }
-
-//    private void saveCACert(X509Certificate cert) throws IOException {
-//        PEMWriter pemWriter = new PEMWriter(new FileWriter(PATH_CA_CERT));
-//        pemWriter.writeObject(cert);
-//        pemWriter.flush();
-//    }
-
 
     private KeyStore createMasterKeyStore() throws IOException, KeyStoreException, NoSuchAlgorithmException, CertificateException {
         PEMReader reader;
