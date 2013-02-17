@@ -5,9 +5,13 @@ import org.apache.commons.io.IOUtils;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x500.X500NameBuilder;
 import org.bouncycastle.asn1.x500.style.BCStyle;
+import org.bouncycastle.cert.X509CRLHolder;
 import org.bouncycastle.cert.X509CertificateHolder;
+import org.bouncycastle.cert.X509v2CRLBuilder;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
+import org.bouncycastle.cert.jcajce.JcaX509CRLConverter;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v2CRLBuilder;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.openssl.PEMReader;
 import org.bouncycastle.openssl.PEMWriter;
@@ -25,11 +29,16 @@ import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.joda.time.DateTime;
 import org.joda.time.Period;
+import org.jruby.CompatVersion;
+import org.jruby.RubyArray;
+import org.jruby.embed.LocalContextScope;
+import org.jruby.embed.ScriptingContainer;
 import org.junit.Test;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
+import javax.security.auth.x500.X500Principal;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -37,9 +46,11 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.*;
 import java.math.BigInteger;
 import java.security.*;
+import java.security.cert.*;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
-import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class SslTest {
@@ -49,6 +60,7 @@ public class SslTest {
     private static final String PATH_CA_PUBLIC_KEY = PATH_TEST_DIR + "/ca/ca_pub.pem";
     private static final String PATH_CA_PRIVATE_KEY = PATH_TEST_DIR + "/ca/ca_key.pem";
     private static final String PATH_CA_CERT = PATH_TEST_DIR + "/ca/ca_crt.pem";
+    private static final String PATH_CA_CRL = PATH_TEST_DIR + "/ca/ca_crl.pem";
     // TODO: don't hard-code localhost
     private static final String PATH_MASTER_PUBLIC_KEY = PATH_TEST_DIR + "/public_keys/localhost.pem";
     private static final String PATH_MASTER_PRIVATE_KEY = PATH_TEST_DIR + "/private_keys/localhost.pem";
@@ -58,6 +70,24 @@ public class SslTest {
 
     private static final AtomicInteger nextSerialNum = new AtomicInteger(1);
 
+    private static final PuppetLibrary puppetLibrary = newPuppetLibrary();
+
+
+    private static PuppetLibrary newPuppetLibrary() {
+        String[] paths = new String[] {
+                "./git/jruby-sandbox/src/main/ruby",
+                "/home/cprice/work/puppet/puppet/git/puppet/lib",
+                "/home/cprice/work/puppet/puppet/git/facter/lib"
+        };
+
+        ScriptingContainer ruby = new ScriptingContainer(LocalContextScope.SINGLETHREAD);
+        ruby.setLoadPaths(Arrays.asList(paths));
+        ruby.setCompatVersion(CompatVersion.RUBY1_9);
+        ruby.runScriptlet("require 'puppet_library'");
+        Object puppetLibraryClass = ruby.get("PuppetLibrary");
+        return ruby.callMethod(puppetLibraryClass, "new", PuppetLibrary.class);
+    }
+
     private static abstract class AuthServlet extends HttpServlet
     {
         public AuthServlet(){}
@@ -66,6 +96,10 @@ public class SslTest {
 
         protected void put(HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
             super.doPut(request, response);
+        }
+
+        protected void post(HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException {
+            super.doPost(request, response);
         }
 
         protected void checkAuth(HttpServletRequest request)
@@ -89,6 +123,12 @@ public class SslTest {
             checkAuth(request);
             put(request, response);
         }
+
+        @Override
+        protected void doPost(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+            checkAuth(request);
+            post(request, response);
+        }
     }
 
     private static class FailServlet extends AuthServlet
@@ -98,6 +138,7 @@ public class SslTest {
             response.setContentType("text/plain");
             response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
             response.getWriter().println("Unsupported URL path: '" + request.getPathInfo() + "'");
+            System.out.println("Unsupported URL path: '" + request.getPathInfo() + "'");
         }
     }
 
@@ -174,6 +215,134 @@ public class SslTest {
     }
 
 
+    private static class CACRLServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            response.setContentType("text/plain");
+            response.setStatus(HttpServletResponse.SC_OK);
+            IOUtils.copy(new FileReader(PATH_CA_CRL), response.getWriter());
+        }
+    }
+
+
+    private static class NodeServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            String node = request.getPathInfo().replaceFirst("/", "");
+
+            final String nodeData;
+            synchronized (puppetLibrary) {
+                nodeData = puppetLibrary.findNode(node);
+            }
+            System.out.println("RETURNING NODE DATA: ");
+            System.out.println("----------------------");
+            System.out.println(nodeData);
+            System.out.println("----------------------");
+            response.setContentType("text/pson");
+            response.setStatus(HttpServletResponse.SC_OK);
+            response.getWriter().print(nodeData);
+        }
+    }
+
+    private static class ReportServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            response.setContentType("text/plain");
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            response.getWriter().print("No implementation of GET for reports");
+        }
+
+        @Override
+        protected void put(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            String node = request.getPathInfo().replaceFirst("/", "");
+            String reportBody = IOUtils.toString(request.getReader());
+
+            System.out.println("RECEIVED REPORT, BODY: ");
+            System.out.println("-----------------------");
+            System.out.println(reportBody);
+            System.out.println("-----------------------");
+
+            final String result;
+            synchronized (puppetLibrary) {
+                result = puppetLibrary.saveReport(node, reportBody);
+            }
+
+            System.out.println("SAVED REPORT, RESULT: ");
+            System.out.println("-----------------------");
+            System.out.println(result);
+            System.out.println("-----------------------");
+
+            response.setContentType("text/yaml");
+            response.setStatus(HttpServletResponse.SC_OK);
+            response.getWriter().print(result);
+        }
+    }
+
+    private static class FileMetadatasServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            String path = request.getPathInfo().replaceFirst("/", "");
+
+            final String result;
+            synchronized (puppetLibrary) {
+                result = puppetLibrary.searchFileMetadata(path);
+            }
+
+            response.setContentType("text/pson");
+            response.setStatus(HttpServletResponse.SC_OK);
+            response.getWriter().print(result);
+        }
+    }
+
+    private static class FileMetadataServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            String path = request.getPathInfo().replaceFirst("/", "");
+
+            final String result;
+            synchronized (puppetLibrary) {
+                result = puppetLibrary.findFileMetadata(path);
+            }
+
+            response.setContentType("text/pson");
+            response.setStatus(HttpServletResponse.SC_OK);
+            response.getWriter().print(result);
+        }
+    }
+
+    private static class CatalogServlet extends AuthServlet
+    {
+        @Override
+        protected void get(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            response.setContentType("text/plain");
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            response.getWriter().print("No implementation of GET for catalogs");
+        }
+
+
+        @Override
+        protected void post(HttpServletRequest request, HttpServletResponse response) throws IOException {
+            String node = request.getPathInfo().replaceFirst("/", "");
+
+            final String result;
+            synchronized (puppetLibrary) {
+                result = puppetLibrary.findCatalog(node);
+            }
+
+            response.setContentType("text/pson");
+            response.setStatus(HttpServletResponse.SC_OK);
+            response.getWriter().print(result);
+        }
+    }
+
+
+
+
     @Test
     public void testHttpsServer() throws Exception {
         Security.addProvider(new BouncyCastleProvider());
@@ -212,7 +381,12 @@ public class SslTest {
         context.addServlet(new ServletHolder(new CACertServlet()), "/production/certificate/ca");
         context.addServlet(new ServletHolder(new CertServlet()), "/production/certificate/*");
         context.addServlet(new ServletHolder(new CertReqServlet()), "/production/certificate_request/*");
-
+        context.addServlet(new ServletHolder(new CACRLServlet()), "/production/certificate_revocation_list/ca");
+        context.addServlet(new ServletHolder(new NodeServlet()), "/production/node/*");
+        context.addServlet(new ServletHolder(new ReportServlet()), "/production/report/*");
+        context.addServlet(new ServletHolder(new FileMetadatasServlet()), "/production/file_metadatas/*");
+        context.addServlet(new ServletHolder(new FileMetadataServlet()), "/production/file_metadata/*");
+        context.addServlet(new ServletHolder(new CatalogServlet()), "/production/catalog/*");
 
         server.setHandler(context);
 
@@ -228,7 +402,7 @@ public class SslTest {
     }
 
 
-    private void createMasterCerts() throws IOException, NoSuchAlgorithmException, NoSuchProviderException, OperatorCreationException, CertificateException {
+    private void createMasterCerts() throws IOException, NoSuchAlgorithmException, NoSuchProviderException, OperatorCreationException, CertificateException, CRLException {
         for (String filePath : new String[] {
                 PATH_CA_CERT, PATH_CA_PRIVATE_KEY, PATH_CA_PUBLIC_KEY,
                 PATH_MASTER_CERT, PATH_MASTER_PRIVATE_KEY, PATH_MASTER_PUBLIC_KEY
@@ -262,9 +436,8 @@ public class SslTest {
         X509Certificate hostCert = signCertificateRequest(hostCertReq, caName(), caKeyPair.getPrivate());
         saveToPEM(hostCert, PATH_MASTER_CERT);
 
-        // TODO: crl
-//        # And make sure we initialize our CRL.
-//                crl
+        X509CRL crl = generateCRL(caCert.getIssuerX500Principal(), caKeyPair.getPrivate());
+        saveToPEM(crl, PATH_CA_CRL);
     }
 
     private static X500Name caName() {
@@ -379,6 +552,31 @@ public class SslTest {
         JcaX509CertificateConverter converter = new JcaX509CertificateConverter();
         converter.setProvider(BouncyCastleProvider.PROVIDER_NAME);
         return converter.getCertificate(holder);
+    }
+
+    private static X509CRL generateCRL(X500Principal issuer,
+                                       PrivateKey issuerPrivateKey)
+            throws CRLException, OperatorCreationException {
+
+        Date issueDate = DateTime.now().toDate();
+        Date nextUpdate = DateTime.now().plusYears(100).toDate();
+
+        X509v2CRLBuilder crlGen = new JcaX509v2CRLBuilder(issuer, issueDate);
+
+        crlGen.setNextUpdate(nextUpdate);
+//
+//        crlGen.addCRLEntry(BigInteger.ONE, now, CRLReason.privilegeWithdrawn);
+//
+//        crlGen.addExtension(X509Extensions.AuthorityKeyIdentifier, false, new AuthorityKeyIdentifierStructure(pair.getPublic()));
+
+        JcaContentSignerBuilder signerBuilder = new JcaContentSignerBuilder("SHA256withRSA");
+        signerBuilder.setProvider(BouncyCastleProvider.PROVIDER_NAME);
+        ContentSigner signer = signerBuilder.build(issuerPrivateKey);
+
+        X509CRLHolder crlHolder = crlGen.build(signer);
+        JcaX509CRLConverter converter = new JcaX509CRLConverter();
+        converter.setProvider(BouncyCastleProvider.PROVIDER_NAME);
+        return converter.getCRL(crlHolder);
     }
 
     private static BigInteger nextSerial() {
